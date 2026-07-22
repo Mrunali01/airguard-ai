@@ -7,6 +7,8 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from backend.app.agents.groq_supervisor_agent import GroqSupervisorAgent
+from backend.app.services.live_analysis_service import analyze_live_payload
+from backend.app.services.live_data_service import live_data_service
 from ml.config import PROJECT_ROOT
 
 
@@ -206,6 +208,75 @@ def get_citizen_advisory() -> Dict[str, Any]:
 @router.get("/demo-output")
 def get_airguard_demo_output() -> Dict[str, Any]:
     return read_json_file(DATA_DIR / "airguard_demo_output.json")
+
+
+@router.get("/live")
+def get_live_airguard_output() -> Dict[str, Any]:
+    """Return live station evidence, using the short-lived cache when available."""
+    return live_data_service.refresh(force=False)
+
+
+@router.post("/live/refresh")
+def refresh_live_airguard_output(force: bool = False) -> Dict[str, Any]:
+    """Refresh OpenAQ and Open-Meteo evidence or return a transparent fallback."""
+    return live_data_service.refresh(force=force)
+
+
+@router.post("/live/analyze")
+def analyze_live_airguard_output(force_refresh: bool = False) -> Dict[str, Any]:
+    """Analyze current-condition evidence without making causal or regulatory claims."""
+    live_payload = live_data_service.refresh(force=force_refresh)
+    return analyze_live_payload(live_payload)
+
+
+@router.post("/live/agent")
+def run_live_groq_agent(force_refresh: bool = False) -> Dict[str, Any]:
+    """Run grounded Groq synthesis over deterministic live-condition analysis."""
+    live_payload = live_data_service.refresh(force=force_refresh)
+    analyzed_payload = analyze_live_payload(live_payload)
+
+    try:
+        groq_result = GroqSupervisorAgent().run_from_live_payload(analyzed_payload)
+        agent_outputs = analyzed_payload.setdefault("agent_outputs", {})
+        agent_outputs["deterministic_supervisor_decision"] = agent_outputs.get(
+            "groq_supervisor_decision"
+        )
+        agent_outputs["groq_supervisor_decision"] = groq_result["decision"]
+        analyzed_payload["recommended_actions"] = groq_result["decision"][
+            "recommended_actions"
+        ]
+        analyzed_payload["safe_claims"] = groq_result["decision"]["safe_claims"]
+        analyzed_payload["claims_to_avoid"] = groq_result["decision"][
+            "claims_to_avoid"
+        ]
+        analyzed_payload["limitations"] = groq_result["decision"]["limitations"]
+        analyzed_payload["llm_metadata"] = {
+            "status": "completed",
+            "provider": groq_result["llm_provider"],
+            "model": groq_result["model"],
+            "synthesized_at": groq_result["synthesized_at"],
+            "input_provenance": groq_result["input_provenance"],
+            "guardrail": groq_result["guardrail"],
+        }
+        analyzed_payload.setdefault("analysis_metadata", {})[
+            "groq_synthesis_completed"
+        ] = True
+        return analyzed_payload
+    except Exception as exc:
+        analyzed_payload["llm_metadata"] = {
+            "status": "deterministic_fallback",
+            "provider": "Groq",
+            "model": None,
+            "error": str(exc),
+            "guardrail": {
+                "deterministic_fallback_used": True,
+                "human_review_required": True,
+            },
+        }
+        analyzed_payload.setdefault("analysis_metadata", {})[
+            "groq_synthesis_completed"
+        ] = False
+        return analyzed_payload
 
 
 @router.get("/intervention-workflows")

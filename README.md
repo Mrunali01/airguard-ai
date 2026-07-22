@@ -29,10 +29,18 @@ AirGuard AI is decision-support software. It does not automatically authorize en
   - Completed
   - Outcome recorded
   - Rejected
+
 - Verification checklist that blocks approval until required human checks are complete.
 - Citizen advisory workflow with English and Hindi advisory previews.
 - Guardrails for safe claims, claims to avoid, and known limitations.
 - Decision memo and analysis trace views for explainable demo storytelling.
+- Backend validation prevents approval until field verification checks are complete.
+- Citizen advisory preview and approval workflow.
+- Analysis trace screen for explainable tool outputs.
+- Decision memo screen for municipal reporting.
+- Light/dark UI mode.
+- Live OpenAQ pollutant refresh with Open-Meteo weather enrichment.
+- Five-minute upstream cache, source-timestamp freshness checks, and labeled stale-data fallback.
 
 ## Tech Stack
 
@@ -164,6 +172,10 @@ http://127.0.0.1:3000
 
 ```text
 GET  /api/airguard/health
+GET  /api/airguard/live
+POST /api/airguard/live/refresh
+POST /api/airguard/live/analyze
+POST /api/airguard/live/agent
 GET  /api/airguard/demo-output
 GET  /api/airguard/cpcb-aqi
 GET  /api/airguard/remote-sensing
@@ -303,4 +315,16 @@ Then deploy the frontend and open the generated production URL.
 
 ## License
 
-See [LICENSE](LICENSE).
+- `GET /api/airguard/live` loads live data when the cache is empty and otherwise serves the five-minute cache.
+- The dashboard Refresh button calls `POST /api/airguard/live/refresh`. If no newer station measurement exists, the source timestamp and values may remain unchanged.
+- `Run AirGuard Analysis` calls `POST /api/airguard/live/analyze` to evaluate current AQI, dispersion, source hypotheses, vulnerable receptors, and candidate interventions.
+- `Run Groq Analysis` calls `POST /api/airguard/live/agent`: deterministic tools analyze the data first, then Groq synthesizes the verified evidence into an operational decision.
+- Groq cannot override deterministic AQI, monitoring priority, immediate-intervention status, safe claims, or the allowed intervention set. Invalid actions and causal overclaims are repaired or removed.
+- If Groq is unavailable or returns invalid JSON, the endpoint returns the deterministic live analysis with explicit fallback metadata.
+- Live analysis does not recompute the 24-hour model forecast; the forecast panel remains explicitly labeled as historical benchmark context.
+- Set `AIRGUARD_LIVE_CACHE_SECONDS` to change the default 300-second refresh cache. Use `POST /api/airguard/live/refresh?force=true` only for operator/debug use.
+- If OpenAQ or Open-Meteo fails, the API returns the last successful live response or saved demo payload with `refresh_metadata.source_status=cached_fallback`.
+- Live CPCB breakpoint AQI is a screening calculation from the latest available pollutants; regulatory AQI requires official averaging windows and validation.
+- Leaflet satellite tiles use Esri online imagery, so the browser needs internet access for the satellite base layer.
+- Workflow state is in-memory for the hackathon demo. Restarting the backend resets intervention workflow state.
+- The system is decision-support only. AI recommendations do not automatically authorize enforcement or public publishing.
