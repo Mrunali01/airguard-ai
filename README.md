@@ -1,14 +1,26 @@
 # AirGuard AI
 
-AirGuard AI is a smart-city air-quality command centre for Chennai. It combines ground sensor evidence, forecast validation, Sentinel-5P NO2 context, geospatial exposure, source hypotheses, human-reviewed interventions, citizen advisories, and municipal decision memo support.
+AirGuard AI is an AI-powered urban air quality intelligence platform for smart-city intervention teams. It turns air-quality readings, forecast validation, satellite evidence, geospatial context, source attribution, and human review workflows into a single municipal command-centre dashboard.
 
-## What Works
+The current prototype is focused on Chennai and is designed for hackathon demonstration. The system helps city operators answer:
 
-- FastAPI backend with demo evidence APIs.
-- Next.js + TypeScript + Tailwind frontend.
-- Leaflet satellite command map with station, POI, road, wind, ward, and NO2 overlays.
-- Real station pilot status banner for OpenAQ station 2586.
-- Intervention workflow with backend-owned state:
+- What is the current pollution risk around the station?
+- Which evidence supports the source hypothesis?
+- Which preventive action should be prioritized?
+- What must a human verify before dispatch?
+- What citizen advisory can be published safely?
+
+AirGuard AI is decision-support software. It does not automatically authorize enforcement, field dispatch, or public advisories without human review.
+
+## Key Features
+
+- FastAPI backend with integrated AirGuard evidence endpoints.
+- Next.js App Router frontend built with TypeScript and Tailwind CSS.
+- Premium command-centre dashboard with light and dark mode.
+- Leaflet satellite map with station, roads, POIs, wind direction, ward boundary, and NO2 context.
+- Executive summary, ground sensor snapshot, forecast validation, Sentinel-5P evidence, geospatial evidence, and source hypotheses.
+- Groq supervisor decision display with reasoning summary and selected forecast method.
+- Backend-owned intervention workflow:
   - Proposed
   - Under verification
   - Approved
@@ -17,6 +29,11 @@ AirGuard AI is a smart-city air-quality command centre for Chennai. It combines 
   - Completed
   - Outcome recorded
   - Rejected
+
+- Verification checklist that blocks approval until required human checks are complete.
+- Citizen advisory workflow with English and Hindi advisory previews.
+- Guardrails for safe claims, claims to avoid, and known limitations.
+- Decision memo and analysis trace views for explainable demo storytelling.
 - Backend validation prevents approval until field verification checks are complete.
 - Citizen advisory preview and approval workflow.
 - Analysis trace screen for explainable tool outputs.
@@ -25,42 +42,46 @@ AirGuard AI is a smart-city air-quality command centre for Chennai. It combines 
 - Live OpenAQ pollutant refresh with Open-Meteo weather enrichment.
 - Five-minute upstream cache, source-timestamp freshness checks, and labeled stale-data fallback.
 
-## Run Locally
+## Tech Stack
 
-Open two PowerShell terminals.
+| Layer | Technology |
+| --- | --- |
+| Frontend | Next.js, React, TypeScript, Tailwind CSS |
+| Map | Leaflet, React Leaflet, Esri World Imagery tiles |
+| Backend | FastAPI, Pydantic, Uvicorn |
+| Data and ML support | Python, pandas, scikit-learn, geospatial and remote-sensing utilities |
+| LLM support | Groq/OpenAI-compatible agent modules |
 
-Backend:
+## Repository Structure
 
-```powershell
-cd D:\airguard-ai
-.\.venv\Scripts\python.exe -m uvicorn backend.app.main:app --host 127.0.0.1 --port 8000
+```text
+airguard-ai/
+  backend/
+    app/
+      api/routes_airguard.py       # AirGuard API and workflow commands
+      main.py                      # FastAPI app entrypoint
+      agents/                      # Supervisor, advisory, and memo agents
+      tools/                       # AQI, forecast, evidence, and ranking tools
+    data/sample/                   # Demo evidence payloads
+  frontend/
+    src/app/page.tsx               # Main command-centre dashboard
+    src/components/CommandLeafletMap.tsx
+    package.json
+  ml/                              # ML configuration and support code
+  scripts/                         # Utility scripts
+  docs/
+    architecture.md
+    problem_statement.md
+  requirements.txt
 ```
 
-Frontend:
+## Environment Variables
+
+Create the frontend environment file:
 
 ```powershell
 cd D:\airguard-ai\frontend
-npm run dev -- --hostname 127.0.0.1
-```
-
-Open:
-
-```text
-http://127.0.0.1:3000
-```
-
-Backend docs:
-
-```text
-http://127.0.0.1:8000/docs
-```
-
-## Environment
-
-Frontend environment file:
-
-```text
-frontend/.env.local
+Copy-Item .env.example .env.local
 ```
 
 Expected value:
@@ -69,7 +90,85 @@ Expected value:
 NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:8000
 ```
 
-## Key API Endpoints
+For deployment, set `NEXT_PUBLIC_API_BASE_URL` to the public URL of the deployed FastAPI backend.
+
+Optional backend LLM variables may be needed if you enable live LLM calls instead of sample outputs:
+
+```env
+GROQ_API_KEY=your_key_here
+OPENAI_API_KEY=your_key_here
+```
+
+## Local Setup
+
+### 1. Clone the repository
+
+```powershell
+git clone https://github.com/Mrunali01/airguard-ai.git
+cd airguard-ai
+```
+
+### 2. Create and activate Python environment
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+```
+
+### 3. Install frontend dependencies
+
+```powershell
+cd D:\airguard-ai\frontend
+npm install
+```
+
+### 4. Configure frontend API base URL
+
+```powershell
+cd D:\airguard-ai\frontend
+Copy-Item .env.example .env.local
+```
+
+Confirm `frontend/.env.local` contains:
+
+```env
+NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:8000
+```
+
+## Run Locally
+
+Open two PowerShell terminals.
+
+### Terminal 1: backend
+
+```powershell
+cd D:\airguard-ai
+.\.venv\Scripts\python.exe -m uvicorn backend.app.main:app --host 127.0.0.1 --port 8000
+```
+
+Backend health and docs:
+
+```text
+http://127.0.0.1:8000/
+http://127.0.0.1:8000/docs
+```
+
+### Terminal 2: frontend
+
+```powershell
+cd D:\airguard-ai\frontend
+npm run dev -- --hostname 127.0.0.1
+```
+
+Open the dashboard:
+
+```text
+http://127.0.0.1:3000
+```
+
+## Main API Endpoints
 
 ```text
 GET  /api/airguard/health
@@ -96,22 +195,26 @@ POST /api/airguard/commands/export-memo
 
 ## Demo Flow
 
-1. Open the command centre map.
-2. Point out the `REAL STATION PILOT` data-status badge.
-3. Click station 2586 on the Leaflet satellite map.
-4. Review AQI, dominant pollutant, wind, and dispersion risk.
-5. Open the hotspot intelligence screen.
-6. Show source hypotheses and guardrails.
-7. Go to Interventions.
-8. Complete the verification checklist.
-9. Approve the intervention.
-10. Dispatch, start, complete, and record outcome.
-11. Open Citizen Advisory and approve publishing workflow.
-12. Open Reports for the municipal memo.
+1. Start the backend and frontend.
+2. Open `http://127.0.0.1:3000`.
+3. Show the Chennai command-centre header and real station pilot context.
+4. Use the satellite command map to explain station, road, vulnerability, wind, and NO2 evidence.
+5. Review the executive summary and ground sensor snapshot.
+6. Walk through forecast validation and Sentinel-5P evidence.
+7. Review source hypotheses and Groq supervisor decision.
+8. Open the intervention workflow.
+9. Click `Request Verification`.
+10. Complete the field inspection, evidence confirmation, and ward engineer approval checks.
+11. Click `Approve Intervention`.
+12. Continue through `Dispatch`, `Start`, `Complete`, and `Record Outcome`.
+13. Open Citizen Advisory and approve or regenerate the advisory.
+14. Use the Reports/Memo section for final municipal decision context.
 
-## Verification Commands
+## Verification
 
-Frontend:
+Run these before final submission.
+
+### Frontend
 
 ```powershell
 cd D:\airguard-ai\frontend
@@ -119,7 +222,7 @@ npm run lint
 npm run build
 ```
 
-Backend compile/import:
+### Backend
 
 ```powershell
 cd D:\airguard-ai
@@ -127,14 +230,90 @@ cd D:\airguard-ai
 .\.venv\Scripts\python.exe -c "import backend.app.main; print('backend ok')"
 ```
 
-Quick API check:
+### API smoke checks
+
+Start the backend first, then run:
 
 ```powershell
+curl.exe -L http://127.0.0.1:8000/api/airguard/health
 curl.exe -L http://127.0.0.1:8000/api/airguard/demo-output
 curl.exe -L http://127.0.0.1:8000/api/airguard/intervention-workflows
 ```
 
-## Notes
+## Deployment
+
+The project has two deployable services:
+
+- Backend: FastAPI API
+- Frontend: Next.js dashboard
+
+Deploy the backend first so you have a public API URL for the frontend.
+
+### Backend Deployment
+
+You can deploy the FastAPI app on Render, Railway, Fly.io, Azure App Service, AWS, or any platform that supports Python web services.
+
+Recommended service settings:
+
+```text
+Root directory: repository root
+Runtime: Python
+Install command: pip install -r requirements.txt
+Start command: uvicorn backend.app.main:app --host 0.0.0.0 --port $PORT
+```
+
+If your platform does not provide `$PORT`, use the port value required by that platform.
+
+After deployment, verify:
+
+```text
+https://your-backend-domain.example.com/
+https://your-backend-domain.example.com/api/airguard/health
+https://your-backend-domain.example.com/api/airguard/demo-output
+```
+
+### Frontend Deployment
+
+The frontend can be deployed on Vercel, Netlify, or any Node hosting platform that supports Next.js.
+
+Recommended Vercel settings:
+
+```text
+Root directory: frontend
+Framework preset: Next.js
+Install command: npm install
+Build command: npm run build
+Output: Next.js default
+```
+
+Set this environment variable in the frontend hosting platform:
+
+```env
+NEXT_PUBLIC_API_BASE_URL=https://your-backend-domain.example.com
+```
+
+Then deploy the frontend and open the generated production URL.
+
+### Production Checklist
+
+- Backend `/api/airguard/health` returns a success response.
+- Backend `/api/airguard/demo-output` returns the integrated JSON payload.
+- Frontend environment variable points to the deployed backend URL.
+- Frontend production page loads without API errors.
+- Satellite map loads. Browser internet access is required for Esri imagery tiles.
+- Intervention buttons update status in order.
+- Approval is blocked until all verification checks are complete.
+- Citizen advisory buttons return successful backend responses.
+
+## Known Demo Constraints
+
+- The prototype currently uses Chennai sample evidence.
+- Intervention workflow state is stored in memory for the demo. Restarting the backend resets workflow status.
+- Satellite tiles are loaded from Esri online imagery.
+- Some ML and agent outputs are sample-backed for stable hackathon presentation.
+- The dashboard should be used for evidence-based decision support, not automatic enforcement.
+
+## License
 
 - `GET /api/airguard/live` loads live data when the cache is empty and otherwise serves the five-minute cache.
 - The dashboard Refresh button calls `POST /api/airguard/live/refresh`. If no newer station measurement exists, the source timestamp and values may remain unchanged.
