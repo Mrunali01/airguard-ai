@@ -1,5 +1,7 @@
+import copy
 import json
-from typing import Any, Dict, Optional
+from datetime import datetime, timezone
+from typing import Any, Dict, Literal, Optional
 from backend.app.tools.remote_sensing_evidence_tool import RemoteSensingEvidenceTool
 from pydantic import BaseModel, Field, ValidationError
 
@@ -16,7 +18,7 @@ OUTPUT_PATH = PROJECT_ROOT / "backend" / "data" / "sample" / "groq_supervisor_ag
 
 class GroqSupervisorDecision(BaseModel):
     intervention_required_now: bool
-    monitoring_priority: str
+    monitoring_priority: Literal["low", "medium", "high", "data_quality_review"]
     decision_headline: str
     reasoning_summary: str
     selected_forecast_method: str
@@ -147,6 +149,251 @@ Return only JSON.
             {"role": "system", "content": system_prompt.strip()},
             {"role": "user", "content": user_prompt.strip()},
         ]
+
+    def _compact_live_context(self, live_analysis: Dict[str, Any]) -> Dict[str, Any]:
+        evidence = live_analysis.get("evidence_stack", {})
+        ground = evidence.get("ground_sensor", {})
+        summary = live_analysis.get("executive_summary", {})
+        geo = evidence.get("geospatial_context", {})
+        remote = evidence.get("remote_sensing", {})
+        analysis_metadata = live_analysis.get("analysis_metadata", {})
+
+        return {
+            "data_provenance": {
+                "refresh": live_analysis.get("refresh_metadata", {}),
+                "analysis": analysis_metadata,
+            },
+            "current_station_evidence": {
+                "station_location_id": live_analysis.get("station_location_id"),
+                "screening_aqi": summary.get("cpcb_aqi"),
+                "aqi_category": summary.get("cpcb_aqi_category"),
+                "dominant_pollutant": summary.get("dominant_pollutant"),
+                "pollutants": ground.get("pollutants", {}),
+                "weather": ground.get("weather", {}),
+                "dispersion": ground.get("dispersion", {}),
+            },
+            "cached_context": {
+                "road_density_km_per_km2": geo.get("road_density_km_per_km2"),
+                "major_road_density_km_per_km2": geo.get(
+                    "major_road_density_km_per_km2"
+                ),
+                "nearest_major_road_m": geo.get("nearest_major_road_m"),
+                "industrial_poi_count": geo.get("industrial_poi_count"),
+                "vulnerability_poi_count": geo.get("vulnerability_poi_count"),
+                "satellite_signal": remote.get("relative_no2_signal"),
+                "satellite_image_count": remote.get("collection_image_count"),
+            },
+            "verified_source_hypotheses": evidence.get("source_hypotheses", []),
+            "candidate_interventions": live_analysis.get("recommended_actions", []),
+            "deterministic_decision": {
+                "headline": summary.get("headline"),
+                "monitoring_priority": summary.get("monitoring_priority"),
+                "intervention_required_now": summary.get("intervention_required_now"),
+            },
+            "forecast_context": {
+                "selected_method": summary.get("selected_forecast_method"),
+                "forecast_recomputed_live": analysis_metadata.get("forecast_recomputed", False),
+                "warning": (
+                    "This is historical one-station forecast-validation context, not a newly "
+                    "recomputed live 24-hour forecast."
+                ),
+            },
+            "safe_claims": live_analysis.get("safe_claims", []),
+            "claims_to_avoid": live_analysis.get("claims_to_avoid", []),
+            "limitations": live_analysis.get("limitations", []),
+        }
+
+    def _build_live_prompt(self, context: Dict[str, Any]) -> list[dict]:
+        system_prompt = """
+You are AirGuard AI's Groq Supervisor Agent. Synthesize an operational decision from verified live evidence.
+
+Hard rules:
+- Use only the supplied JSON context. Never invent readings, timestamps, metrics, sources, locations, or actions.
+- AQI, category, monitoring priority, immediate-intervention flag, and candidate actions are deterministic facts. Do not change them.
+- Source entries are plausible evidence-backed hypotheses, never causal proof.
+- Industrial proximity is screening context only. Never identify a facility as responsible.
+- Satellite NO2 is cached regional combustion context, not ground-level AQI or exact attribution.
+- The forecast was not recomputed live. Always describe it as historical one-station benchmark context.
+- Recommend human verification before intervention, enforcement, or public publishing.
+- Rank only candidate action names present in candidate_interventions. Do not create new actions.
+- Preserve concrete values exactly as supplied.
+- Return only valid JSON matching the required schema.
+
+Required JSON schema:
+{
+  "intervention_required_now": boolean,
+  "monitoring_priority": "low" | "medium" | "high" | "data_quality_review",
+  "decision_headline": string,
+  "reasoning_summary": string,
+  "selected_forecast_method": string,
+  "key_evidence_used": [string],
+  "recommended_actions": [
+    {
+      "action": "exact candidate action name",
+      "priority": string,
+      "why": [string],
+      "human_review_required": true
+    }
+  ],
+  "safe_claims": [string],
+  "claims_to_avoid": [string],
+  "human_review_required": true,
+  "limitations": [string]
+}
+"""
+        user_prompt = f"""
+Verified live analysis context:
+{json.dumps(context, indent=2, ensure_ascii=False)}
+
+Create a concise smart-city operational synthesis. Return only JSON.
+"""
+        return [
+            {"role": "system", "content": system_prompt.strip()},
+            {"role": "user", "content": user_prompt.strip()},
+        ]
+
+    def _parse_decision(self, content: str) -> GroqSupervisorDecision:
+        try:
+            raw_decision = json.loads(content)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"Groq returned invalid JSON: {exc}") from exc
+
+        try:
+            return GroqSupervisorDecision(**raw_decision)
+        except ValidationError as exc:
+            raise RuntimeError(f"Groq JSON did not match expected schema: {exc}") from exc
+
+    def _ground_live_decision(
+        self,
+        decision: GroqSupervisorDecision,
+        live_analysis: Dict[str, Any],
+    ) -> tuple[Dict[str, Any], list[str]]:
+        grounded = decision.model_dump()
+        repairs: list[str] = []
+        summary = live_analysis.get("executive_summary", {})
+        deterministic_supervisor = (
+            live_analysis.get("agent_outputs", {}).get("groq_supervisor_decision", {})
+        )
+
+        deterministic_priority = summary.get("monitoring_priority", "data_quality_review")
+        deterministic_intervention = bool(summary.get("intervention_required_now", False))
+        if grounded["monitoring_priority"] != deterministic_priority:
+            grounded["monitoring_priority"] = deterministic_priority
+            repairs.append("monitoring_priority_restored_from_deterministic_analysis")
+        if grounded["intervention_required_now"] != deterministic_intervention:
+            grounded["intervention_required_now"] = deterministic_intervention
+            repairs.append("intervention_flag_restored_from_deterministic_analysis")
+
+        grounded["human_review_required"] = True
+        grounded["selected_forecast_method"] = deterministic_supervisor.get(
+            "selected_forecast_method",
+            f"{summary.get('selected_forecast_method', 'unavailable')} "
+            "(historical benchmark context; not recomputed live)",
+        )
+
+        overclaim_phrases = (
+            "confirmed source",
+            "caused by",
+            "responsible for the pollution",
+            "proves that",
+            "definitive source",
+        )
+
+        def contains_overclaim(value: str) -> bool:
+            text = value.lower()
+            return any(phrase in text for phrase in overclaim_phrases)
+
+        if contains_overclaim(grounded["decision_headline"]):
+            grounded["decision_headline"] = summary.get("headline")
+            repairs.append("headline_overclaim_replaced")
+        if contains_overclaim(grounded["reasoning_summary"]):
+            grounded["reasoning_summary"] = deterministic_supervisor.get(
+                "reasoning_summary", summary.get("headline")
+            )
+            repairs.append("reasoning_overclaim_replaced")
+
+        grounded["key_evidence_used"] = [
+            item for item in grounded["key_evidence_used"] if not contains_overclaim(item)
+        ]
+        if not grounded["key_evidence_used"]:
+            grounded["key_evidence_used"] = deterministic_supervisor.get(
+                "key_evidence_used", []
+            )
+            repairs.append("key_evidence_restored_from_deterministic_analysis")
+
+        deterministic_actions = live_analysis.get("recommended_actions", [])
+        action_by_name = {
+            item.get("action"): item for item in deterministic_actions if item.get("action")
+        }
+        ordered_actions = []
+        seen = set()
+        for item in grounded.get("recommended_actions", []):
+            name = item.get("action")
+            if name not in action_by_name or name in seen:
+                repairs.append("unverified_or_duplicate_action_removed")
+                continue
+            action = copy.deepcopy(action_by_name[name])
+            action["groq_synthesis_why"] = item.get("why", [])
+            action["human_review_required"] = True
+            ordered_actions.append(action)
+            seen.add(name)
+        for name, action in action_by_name.items():
+            if name not in seen:
+                ordered_actions.append(copy.deepcopy(action))
+        grounded["recommended_actions"] = ordered_actions
+
+        grounded["safe_claims"] = live_analysis.get("safe_claims", [])
+        deterministic_avoid = live_analysis.get("claims_to_avoid", [])
+        grounded["claims_to_avoid"] = list(
+            dict.fromkeys(deterministic_avoid + grounded.get("claims_to_avoid", []))
+        )
+        grounded["limitations"] = list(
+            dict.fromkeys(
+                live_analysis.get("limitations", []) + grounded.get("limitations", [])
+            )
+        )
+        return grounded, repairs
+
+    def run_from_live_payload(self, live_analysis: Dict[str, Any]) -> Dict[str, Any]:
+        context = self._compact_live_context(live_analysis)
+        completion = self.client.chat.completions.create(
+            model=self.model,
+            messages=self._build_live_prompt(context),
+            temperature=0.1,
+            max_completion_tokens=1400,
+            response_format={"type": "json_object"},
+        )
+        content = completion.choices[0].message.content
+        decision = self._parse_decision(content)
+        grounded_decision, repairs = self._ground_live_decision(decision, live_analysis)
+
+        return {
+            "agent_name": "Groq Live Supervisor Agent",
+            "agent_type": "llm_grounded_live_evidence_synthesis_agent",
+            "llm_provider": "Groq",
+            "model": self.model,
+            "synthesized_at": datetime.now(timezone.utc).isoformat().replace(
+                "+00:00", "Z"
+            ),
+            "input_provenance": {
+                "analysis_id": live_analysis.get("analysis_metadata", {}).get(
+                    "analysis_id"
+                ),
+                "source_timestamp": live_analysis.get("refresh_metadata", {}).get(
+                    "source_timestamp"
+                ),
+                "uses_live_station_data": live_analysis.get("analysis_metadata", {}).get(
+                    "uses_live_station_data", False
+                ),
+                "forecast_recomputed": False,
+            },
+            "guardrail": {
+                "deterministic_fields_preserved": True,
+                "repairs_applied": repairs,
+                "human_review_required": True,
+            },
+            "decision": grounded_decision,
+        }
 
     def run(self) -> Dict[str, Any]:
         tool_outputs = self.collect_tool_outputs()

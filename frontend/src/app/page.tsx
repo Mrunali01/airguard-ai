@@ -61,7 +61,47 @@ type InterventionWorkflow = {
 type AirGuardPayload = {
   generated_at?: string;
   city?: string;
+  data_mode?: string;
   station_location_id?: string | number;
+  refresh_metadata?: {
+    status?: "updated" | "cached" | "fallback";
+    source_status?: "live" | "cached_fallback";
+    fallback_type?: string;
+    requested_at?: string;
+    source_timestamp?: string;
+    weather_timestamp?: string;
+    source_age_hours?: number;
+    freshness_status?: string;
+    is_fresh?: boolean;
+    new_reading_available?: boolean;
+    served_from_cache?: boolean;
+    cache_ttl_seconds?: number;
+    error?: string;
+  };
+  analysis_metadata?: {
+    analysis_id?: string;
+    analysis_type?: string;
+    analyzed_at?: string;
+    uses_live_station_data?: boolean;
+    source_timestamp?: string;
+    forecast_recomputed?: boolean;
+    source_attribution_mode?: string;
+    human_review_required?: boolean;
+    groq_synthesis_completed?: boolean;
+  };
+  llm_metadata?: {
+    status?: "completed" | "deterministic_fallback";
+    provider?: string;
+    model?: string | null;
+    synthesized_at?: string;
+    error?: string;
+    guardrail?: {
+      deterministic_fields_preserved?: boolean;
+      deterministic_fallback_used?: boolean;
+      repairs_applied?: string[];
+      human_review_required?: boolean;
+    };
+  };
   executive_summary?: Record<string, Primitive>;
   evidence_stack?: {
     ground_sensor?: {
@@ -204,12 +244,38 @@ function isVerified(workflow: InterventionWorkflow) {
 }
 
 async function fetchDashboardData() {
-  const response = await fetch(`${API_BASE_URL}/api/airguard/demo-output`, {
+  const response = await fetch(`${API_BASE_URL}/api/airguard/live`, {
     cache: "no-store",
   });
 
   if (!response.ok) {
     throw new Error(`AirGuard API returned ${response.status}`);
+  }
+
+  return (await response.json()) as AirGuardPayload;
+}
+
+async function refreshDashboardData() {
+  const response = await fetch(`${API_BASE_URL}/api/airguard/live/refresh`, {
+    method: "POST",
+    cache: "no-store",
+  });
+
+  if (!response.ok) {
+    throw new Error(`Live refresh API returned ${response.status}`);
+  }
+
+  return (await response.json()) as AirGuardPayload;
+}
+
+async function analyzeDashboardData() {
+  const response = await fetch(`${API_BASE_URL}/api/airguard/live/agent`, {
+    method: "POST",
+    cache: "no-store",
+  });
+
+  if (!response.ok) {
+    throw new Error(`Live analysis API returned ${response.status}`);
   }
 
   return (await response.json()) as AirGuardPayload;
@@ -323,6 +389,12 @@ function ageLabel(value: string | undefined, now: number) {
   const hours = Math.max(0, ageMs / 36e5);
   if (hours < 48) return `${hours.toFixed(1)} hours`;
   return `${Math.floor(hours / 24)} days`;
+}
+
+function timestampIsStale(value: string | undefined, now: number) {
+  if (!value) return true;
+  const timestamp = new Date(value).getTime();
+  return !Number.isFinite(timestamp) || now - timestamp > 24 * 36e5;
 }
 
 function Card({
@@ -476,7 +548,7 @@ function StationDrawer({
             Dominant pollutant: {titleize(summary.dominant_pollutant)}
           </p>
           <p className="text-sm text-amber-700 dark:text-amber-300">
-            Sensor age: {ageLabel(ground?.latest_datetime_utc, now)} - STALE
+            Sensor age: {ageLabel(ground?.latest_datetime_utc, now)} - {timestampIsStale(ground?.latest_datetime_utc, now) ? "STALE" : "FRESH"}
           </p>
         </div>
         <div className="grid grid-cols-2 gap-3">
@@ -522,20 +594,37 @@ export default function Home() {
   const [error, setError] = useState<string | null>(null);
   const [theme, setTheme] = useState<"light" | "dark">("light");
   const [commandStatus, setCommandStatus] = useState<string | null>(null);
+  const [refreshStatus, setRefreshStatus] = useState<string | null>(null);
+  const [analyzing, setAnalyzing] = useState(false);
   const [commandPending, setCommandPending] = useState<string | null>(null);
   const [workflows, setWorkflows] = useState<Record<string, InterventionWorkflow>>({});
-  const [now] = useState(() => Date.now());
+  const [now, setNow] = useState(() => Date.now());
 
   const loadData = useCallback(async () => {
     setRefreshing(true);
     setError(null);
+    setRefreshStatus(null);
     try {
       const [dashboardData, workflowData] = await Promise.all([
-        fetchDashboardData(),
+        refreshDashboardData(),
         fetchWorkflowsSafely(),
       ]);
       setData(dashboardData);
       setWorkflows(workflowData);
+      setNow(Date.now());
+
+      const metadata = dashboardData.refresh_metadata;
+      if (metadata?.status === "fallback") {
+        setRefreshStatus(
+          `Live services were unavailable. Showing ${metadata.fallback_type?.replaceAll("_", " ") ?? "cached data"}.`,
+        );
+      } else if (metadata?.new_reading_available) {
+        setRefreshStatus(`New station reading loaded: ${formatDateTime(metadata.source_timestamp)}.`);
+      } else if (metadata?.served_from_cache) {
+        setRefreshStatus("Refresh checked. The five-minute live cache is still current.");
+      } else {
+        setRefreshStatus(`Live sources checked; no newer station reading is available yet.`);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load AirGuard data");
     } finally {
@@ -551,6 +640,7 @@ export default function Home() {
         if (active) {
           setData(dashboardData);
           setWorkflows(workflowData);
+          setNow(Date.now());
         }
       })
       .catch((err) => {
@@ -563,6 +653,43 @@ export default function Home() {
     return () => {
       active = false;
     };
+  }, []);
+
+  useEffect(() => {
+    const interval = window.setInterval(() => {
+      void loadData();
+    }, 10 * 60 * 1000);
+
+    return () => window.clearInterval(interval);
+  }, [loadData]);
+
+  const runLiveAnalysis = useCallback(async () => {
+    setAnalyzing(true);
+    setError(null);
+    setCommandStatus(null);
+    try {
+      const analysis = await analyzeDashboardData();
+      setData(analysis);
+      setNow(Date.now());
+      setScreen("agent");
+      const analysisId = analysis.analysis_metadata?.analysis_id;
+      const evidenceMode = analysis.analysis_metadata?.uses_live_station_data
+        ? "live station evidence"
+        : "cached fallback evidence";
+      if (analysis.llm_metadata?.status === "completed") {
+        setCommandStatus(
+          `${analysisId ?? "Live analysis"} synthesized by Groq ${analysis.llm_metadata.model ?? "model"} using ${evidenceMode}. Deterministic guardrails preserved the operational facts.`,
+        );
+      } else {
+        setCommandStatus(
+          `${analysisId ?? "Live analysis"} completed using ${evidenceMode}. Groq was unavailable, so the deterministic fallback was used.`,
+        );
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Live analysis failed");
+    } finally {
+      setAnalyzing(false);
+    }
   }, []);
 
   const runCommand = useCallback(
@@ -603,7 +730,9 @@ export default function Home() {
   const actions = data?.recommended_actions ?? [];
   const sourceTime = ground?.latest_datetime_utc;
   const isRealPilot = Boolean(data?.station_location_id);
-  const stale = sourceTime ? now - new Date(sourceTime).getTime() > 48 * 36e5 : true;
+  const stale = timestampIsStale(sourceTime, now);
+  const refreshMetadata = data?.refresh_metadata;
+  const upstreamFallback = refreshMetadata?.source_status === "cached_fallback";
 
   const forecastResults = forecast?.results ?? {};
   const bestResult = forecast?.best_overall ? forecastResults[forecast.best_overall] : undefined;
@@ -744,7 +873,7 @@ export default function Home() {
         }}
         onAgent={() => {
           setDrawerOpen(false);
-          setScreen("agent");
+          void runLiveAnalysis();
         }}
         onCommand={(endpoint, action, notes) => void runCommand(endpoint, action, notes)}
       />
@@ -792,8 +921,14 @@ export default function Home() {
                 <span className="text-sm text-slate-500 dark:text-slate-400">
                   Source reading: {formatDateTime(sourceTime)}
                 </span>
-                <Pill tone={error ? "red" : stale ? "amber" : "green"}>
-                  {error ? "PIPELINE FAILURE" : stale ? "STALE DATA" : "FRESH DATA"}
+                <Pill tone={error || upstreamFallback ? "red" : stale ? "amber" : "green"}>
+                  {error
+                    ? "PIPELINE FAILURE"
+                    : upstreamFallback
+                      ? "CACHED FALLBACK"
+                      : stale
+                        ? "STALE DATA"
+                        : "FRESH DATA"}
                 </Pill>
               </div>
               <div className="flex flex-wrap gap-2">
@@ -811,13 +946,11 @@ export default function Home() {
                   {refreshing ? "Refreshing..." : "Refresh"}
                 </button>
                 <button
-                  onClick={() => {
-                    setScreen("agent");
-                    void runCommand("request-verification", "Run AirGuard Analysis", "Operator requested a new analysis trace.");
-                  }}
+                  onClick={() => void runLiveAnalysis()}
+                  disabled={analyzing}
                   className="rounded-lg bg-teal-700 px-4 py-2 text-sm font-semibold text-white hover:bg-teal-800"
                 >
-                  {commandPending === "request-verification:Run AirGuard Analysis" ? "Running..." : "Run AirGuard Analysis"}
+                  {analyzing ? "Running Groq agent..." : "Run Groq Analysis"}
                 </button>
               </div>
             </div>
@@ -839,6 +972,13 @@ export default function Home() {
               {commandStatus ? (
                 <Card className="mb-4 border-teal-200 bg-teal-50 p-4 dark:border-teal-800 dark:bg-teal-950/40">
                   <p className="text-sm font-semibold text-teal-900 dark:text-teal-100">{commandStatus}</p>
+                </Card>
+              ) : null}
+              {refreshStatus ? (
+                <Card className={`mb-4 p-4 ${upstreamFallback ? "border-amber-200 bg-amber-50 dark:border-amber-800 dark:bg-amber-950/40" : "border-teal-200 bg-teal-50 dark:border-teal-800 dark:bg-teal-950/40"}`}>
+                  <p className={`text-sm font-semibold ${upstreamFallback ? "text-amber-900 dark:text-amber-100" : "text-teal-900 dark:text-teal-100"}`}>
+                    {refreshStatus}
+                  </p>
                 </Card>
               ) : null}
               {error ? (
@@ -1101,9 +1241,27 @@ export default function Home() {
                 <Card className="p-5">
                   <SectionTitle
                     label="Analysis trace"
-                    title={`Analysis Run AG-2026-0719-${String(data?.station_location_id ?? "001").padStart(3, "0")}`}
+                    title={`Analysis Run ${data?.analysis_metadata?.analysis_id ?? `AG-${String(data?.station_location_id ?? "001").padStart(3, "0")}`}`}
                     aside={<Pill tone="teal">Trace, not chain-of-thought</Pill>}
                   />
+                  {data?.analysis_metadata ? (
+                    <div className="mb-4 flex flex-wrap gap-2">
+                      <Pill tone={data.analysis_metadata.uses_live_station_data ? "green" : "amber"}>
+                        {data.analysis_metadata.uses_live_station_data ? "LIVE EVIDENCE" : "CACHED EVIDENCE"}
+                      </Pill>
+                      <Pill tone="slate">
+                        {data.analysis_metadata.forecast_recomputed ? "LIVE FORECAST" : "HISTORICAL FORECAST CONTEXT"}
+                      </Pill>
+                      <Pill tone={data.llm_metadata?.status === "completed" ? "teal" : "amber"}>
+                        {data.llm_metadata?.status === "completed"
+                          ? `GROQ ${data.llm_metadata.model ?? "SYNTHESIS"}`
+                          : "DETERMINISTIC FALLBACK"}
+                      </Pill>
+                      <span className="text-sm text-slate-500 dark:text-slate-400">
+                        Analyzed: {formatDateTime(data.analysis_metadata.analyzed_at)}
+                      </span>
+                    </div>
+                  ) : null}
                   <div className="space-y-3">
                     {traceSteps.map((step, index) => (
                       <details key={step.name} open={index < 2} className="rounded-xl border border-slate-200 bg-slate-50 p-4 dark:border-slate-700 dark:bg-slate-800/60">
