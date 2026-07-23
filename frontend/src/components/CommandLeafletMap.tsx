@@ -204,7 +204,22 @@ export default function CommandLeafletMap({
                 <br />
                 CPCB category: {String(category ?? "Satisfactory")}
                 <br />
-                Click marker to open station drawer.
+                <button
+                  type="button"
+                  onClick={() => onStationClick?.()}
+                  style={{
+                    marginTop: 10,
+                    border: 0,
+                    borderRadius: 8,
+                    background: "#0F766E",
+                    color: "white",
+                    cursor: "pointer",
+                    fontWeight: 700,
+                    padding: "8px 10px",
+                  }}
+                >
+                  Open station profile
+                </button>
               </Popup>
             </Marker>
           </LayersControl.Overlay>
