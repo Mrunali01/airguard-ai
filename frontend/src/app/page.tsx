@@ -454,11 +454,11 @@ function StatCard({
   };
 
   return (
-    <div className={`rounded-xl border p-4 ${toneClass[tone]}`}>
+    <div className={`min-w-0 rounded-xl border p-4 ${toneClass[tone]}`}>
       <p className="text-xs font-bold uppercase tracking-[0.14em] text-slate-500 dark:text-slate-400">
         {label}
       </p>
-      <p className="mt-2 text-2xl font-semibold leading-tight text-slate-950 dark:text-slate-50">
+      <p className="mt-2 break-words text-[clamp(1.35rem,2vw,1.75rem)] font-semibold leading-tight text-slate-950 dark:text-slate-50">
         {formatValue(value)}
       </p>
       {detail ? <p className="mt-1 text-sm text-slate-600 dark:text-slate-300">{formatValue(detail)}</p> : null}
@@ -526,62 +526,72 @@ function StationDrawer({
   if (!open) return null;
 
   return (
-    <aside className="fixed inset-y-0 right-0 z-40 w-full max-w-md border-l border-slate-200 bg-white p-6 shadow-2xl dark:border-slate-700 dark:bg-[#0B1220]">
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <p className="text-xs font-bold uppercase tracking-[0.16em] text-teal-700 dark:text-teal-300">Station profile</p>
-          <h2 className="mt-1 text-2xl font-semibold text-slate-950 dark:text-slate-50">
-            Station {formatValue(data?.station_location_id)}
-          </h2>
+    <>
+      <button
+        type="button"
+        aria-label="Close station profile"
+        onClick={onClose}
+        className="fixed inset-0 z-[1900] hidden bg-slate-950/45 backdrop-blur-[2px] lg:block"
+      />
+      <aside className="fixed inset-y-0 right-0 z-[2000] flex w-full max-w-[520px] flex-col border-l border-slate-200 bg-white shadow-2xl dark:border-slate-700 dark:bg-[#0B1220]">
+        <div className="sticky top-0 z-10 border-b border-slate-200 bg-white/95 p-5 backdrop-blur dark:border-slate-700 dark:bg-[#0B1220]/95">
+          <div className="flex items-start justify-between gap-4">
+            <div className="min-w-0">
+              <p className="text-xs font-bold uppercase tracking-[0.16em] text-teal-700 dark:text-teal-300">Station profile</p>
+              <h2 className="mt-1 break-words text-2xl font-semibold text-slate-950 dark:text-slate-50">
+                Station {formatValue(data?.station_location_id)}
+              </h2>
+            </div>
+            <button onClick={onClose} className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-700 dark:border-slate-700 dark:text-slate-200">
+              Close
+            </button>
+          </div>
         </div>
-        <button onClick={onClose} className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-700 dark:border-slate-700 dark:text-slate-200">
-          Close
-        </button>
-      </div>
-      <div className="mt-6 space-y-4">
-        <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 dark:border-slate-700 dark:bg-slate-900">
-          <p className="text-sm text-slate-500 dark:text-slate-400">CPCB AQI</p>
-          <p className="mt-1 text-3xl font-semibold text-slate-950 dark:text-slate-50">
-            {formatValue(summary.cpcb_aqi)} - {formatValue(summary.cpcb_aqi_category)}
-          </p>
-          <p className="mt-2 text-sm text-slate-600 dark:text-slate-300">
-            Dominant pollutant: {titleize(summary.dominant_pollutant)}
-          </p>
-          <p className="text-sm text-amber-700 dark:text-amber-300">
-            Sensor age: {ageLabel(ground?.latest_datetime_utc, now)} - {timestampIsStale(ground?.latest_datetime_utc, now) ? "STALE" : "FRESH"}
-          </p>
+        <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-5">
+          <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 dark:border-slate-700 dark:bg-slate-900">
+            <p className="text-sm text-slate-500 dark:text-slate-400">CPCB AQI</p>
+            <p className="mt-1 break-words text-[clamp(1.8rem,4vw,2.75rem)] font-semibold leading-tight text-slate-950 dark:text-slate-50">
+              {formatValue(summary.cpcb_aqi)} - {formatValue(summary.cpcb_aqi_category)}
+            </p>
+            <p className="mt-2 text-sm text-slate-600 dark:text-slate-300">
+              Dominant pollutant: {titleize(summary.dominant_pollutant)}
+            </p>
+            <p className="text-sm text-amber-700 dark:text-amber-300">
+              Sensor age: {ageLabel(ground?.latest_datetime_utc, now)} - {timestampIsStale(ground?.latest_datetime_utc, now) ? "STALE" : "FRESH"}
+            </p>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            {["pm25", "pm10", "co", "o3", "no2", "so2"].map((key) => (
+              <StatCard key={key} label={titleize(key)} value={ground?.pollutants?.[key]} />
+            ))}
+          </div>
+          <div className="rounded-xl border border-slate-200 p-4 text-sm text-slate-700 dark:border-slate-700 dark:text-slate-200">
+            <p>Wind: {formatValue(ground?.weather?.wind_speed)} m/s from {formatValue(summary.wind_from_sector)}</p>
+            <p>Dispersion risk: {titleize(ground?.dispersion?.dispersion_risk)}</p>
+          </div>
+          <div className="flex flex-col gap-2 sm:flex-row">
+            <button
+              onClick={() => {
+                onCommand("request-verification", "Open Intelligence Report", "Operator opened station intelligence report.");
+                onReport();
+              }}
+              className="rounded-lg bg-slate-900 px-4 py-3 text-sm font-semibold text-white dark:bg-slate-100 dark:text-slate-950"
+            >
+              Open Intelligence Report
+            </button>
+            <button
+              onClick={() => {
+                onCommand("request-verification", "Run Agent Analysis", "Operator requested station analysis from drawer.");
+                onAgent();
+              }}
+              className="rounded-lg bg-teal-700 px-4 py-3 text-sm font-semibold text-white"
+            >
+              Run Agent Analysis
+            </button>
+          </div>
         </div>
-        <div className="grid grid-cols-2 gap-3">
-          {["pm25", "pm10", "co", "o3", "no2", "so2"].map((key) => (
-            <StatCard key={key} label={titleize(key)} value={ground?.pollutants?.[key]} />
-          ))}
-        </div>
-        <div className="rounded-xl border border-slate-200 p-4 text-sm text-slate-700 dark:border-slate-700 dark:text-slate-200">
-          <p>Wind: {formatValue(ground?.weather?.wind_speed)} m/s from {formatValue(summary.wind_from_sector)}</p>
-          <p>Dispersion risk: {titleize(ground?.dispersion?.dispersion_risk)}</p>
-        </div>
-        <div className="flex flex-col gap-2 sm:flex-row">
-          <button
-            onClick={() => {
-              onCommand("request-verification", "Open Intelligence Report", "Operator opened station intelligence report.");
-              onReport();
-            }}
-            className="rounded-lg bg-slate-900 px-4 py-3 text-sm font-semibold text-white"
-          >
-            Open Intelligence Report
-          </button>
-          <button
-            onClick={() => {
-              onCommand("request-verification", "Run Agent Analysis", "Operator requested station analysis from drawer.");
-              onAgent();
-            }}
-            className="rounded-lg bg-teal-700 px-4 py-3 text-sm font-semibold text-white"
-          >
-            Run Agent Analysis
-          </button>
-        </div>
-      </div>
-    </aside>
+      </aside>
+    </>
   );
 }
 
